@@ -3,7 +3,6 @@ package CDB::TinyCDB::Wrapper;
 use warnings;
 use strict;
 use CDB::TinyCDB;
-#use Data::Dumper qw{Dumper};
 
 =head1 NAME
 
@@ -12,11 +11,11 @@ updating its files a little more transparent
 
 =head1 VERSION
 
-Version 0.02
+Version 0.03
 
 =cut
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 =head1 SYNOPSIS
 
@@ -69,7 +68,45 @@ when the file is closed.
 
 sub abandon {
   my ($self) = @_;
-  ++$self->{discard};
+  $self->{discard}++;
+  $self->close;
+}
+
+=head2 close
+
+Closes the CDB file, rebuilding the file reflecting any changes that
+were made.
+
+=cut
+
+sub close {
+  my ($self) = @_;
+
+  # If keys were modified and we want to preserve the changes
+  if (CORE::keys %{$self->{modified}} and !$self->{discard}) {
+    #warn "Keys were modified\n";
+    $self->_reset_each;
+    # Start with the existing file
+    #warn "Creating new temp file\n";
+    my $tmp = CDB::TinyCDB->create ($self->{filename}, "$self->{filename}.$$");
+    #warn "Starting loop\n";
+    # Iterate over all values that were in the modified list
+    while (my ($key, $value) = CORE::each %{$self->{modified}}) {
+      # Skip undefined (deleted) values
+      next unless defined $value;
+      $tmp->put_add ($key, $value);
+    }
+    # Iterate over all keys, copying appropriate values to the new db
+    while (my ($key, $value) = $self->{cdb}->each) {
+      $tmp->put_add ($key, $value) unless exists $self->{modified}->{$key};
+    }
+    # Store our changes
+    $tmp->finish;
+  }
+
+  delete $self->{cdb};
+
+  return 1;
 }
 
 =head2 del
@@ -196,40 +233,16 @@ sub set {
 
 =head2 DESTROY
 
-Called when the object is deleted or goes out of scope.  Iterates
-through the DB and its modifications to recreate a new DB with the
-same content.
-
-This is expensive, though CDB makes it pretty fast.  You should always
-try to make as many modifications in one go as possible, to amortize
-this expense.
+Called when the object is deleted or goes out of scope, it closes the
+file.  This is just here for compatibility with versions < 0.3---all
+new development should explicitly call close, or risk potential issues
+if the data doesn't get GC'd immediately.
 
 =cut
 
 sub DESTROY {
   my ($self) = @_;
-
-  # If keys were modified and we want to preserve the changes
-  if (CORE::keys %{$self->{modified}} and !$self->{discard}) {
-    #warn "Keys were modified\n";
-    $self->_reset_each;
-    # Start with the existing file
-    #warn "Creating new temp file\n";
-    my $tmp = CDB::TinyCDB->create ($self->{filename}, "$self->{filename}.$$");
-    #warn "Starting loop\n";
-    # Iterate over all values that were in the modified list
-    while (my ($key, $value) = CORE::each %{$self->{modified}}) {
-      # Skip undefined (deleted) values
-      next unless defined $value;
-      $tmp->put_add ($key, $value);
-    }
-    # Iterate over all keys, copying appropriate values to the new db
-    while (my ($key, $value) = $self->{cdb}->each) {
-      $tmp->put_add ($key, $value) unless exists $self->{modified}->{$key};
-    }
-    # Store our changes
-    $tmp->finish;
-  }
+  $self->close if ($self->{cdb});
 }
 
 =head1 AUTHOR
